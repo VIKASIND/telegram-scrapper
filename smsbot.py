@@ -1,6 +1,6 @@
 #!/bin/env python3
 from enum import Enum
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.tl.types import InputPeerUser
 from telethon.errors.rpcerrorlist import PeerFloodError, SessionPasswordNeededError, FloodWaitError, EncryptionDeclinedError
 from telethon_secret_chat import SecretChatManager
@@ -101,6 +101,16 @@ class main():
         # Message.
         message = input(gr+"[+] Enter Your Message : "+re)
         
+        # Reply, if secret chat is not selected.
+        if use_secret:
+            use_reply = False
+        else:
+            use_reply = input(gr+"Reply when contact responds [y/N]? ")
+            use_reply = use_reply.lower() in "yes" and use_reply != ""
+        
+        if use_reply:
+            reply = input(gr+"[+] Enter Your Reply : "+re)
+                
         # Sets up the secret chat manager, if it is selected.
         queued_messages = dict()
         if use_secret:
@@ -115,7 +125,7 @@ class main():
                         message = queued_messages[key]
                         del queued_messages[key]
                     except KeyError as e:
-                        print(f"Couldn't find message to ID {key}: {e}")
+                        print(f"Couldn't find message to ID {key}")
                         return
                     
                     # Tries sending the message.
@@ -124,9 +134,35 @@ class main():
                     except Exception as e:
                         print(f"Error sending message to ID {key}: {e}")
             manager.new_chat_created = new_chat
+        
+        # Sets up the replier, if it is selected.
+        queued_replies = dict()
+        if use_reply:
+            @client.on(events.NewMessage(incoming=True))
+            async def handle_new_message(event):
+                if event.is_private:
+                    # Finds the queued reply.
+                    key = event.from_id.user_id
+                    try:
+                        reply = queued_replies[key]
+                        del queued_replies[key]
+                    except KeyError as e:
+                        print(f"Couldn't find reply to ID {key}")
+                        return
+                    
+                    # Tries sending it.
+                    try:
+                        await event.respond(reply)
+                    except Exception as e:
+                        print(f"Error replying message to ID {key}: {e}")
 
         # Iterates over the users, sending the message.
+        my_id = (await client.get_me()).id
         for user in users:
+            # Skips the logged in user.
+            if user['id'] == my_id:
+                continue
+        
             # Finds the user according to the mode.
             if mode == 2:
                 if user['username'] == "":
@@ -141,7 +177,9 @@ class main():
 
             # Tries sending the message to the user.
             try:
+                key = receiver.user_id
                 formatted_message = message.format(user['name'])
+                formatted_reply = reply.format(user['name'])
                 if use_secret:
                     # Secret DM.
                     # Tries to find a previous chat with the user.
@@ -159,18 +197,22 @@ class main():
 
                     # If no chat is found, creates it.
                     if chat is None:
-                        key = receiver.user_id
                         queued_messages[key] = formatted_message
+                        print(gr+"[+] Creating chat with:", user['name'])
                         try:
-                            print(gr+"[+] Creating chat with:", user['name'])
                             await start_chat_safe(manager, receiver)
                         except Exception as e:
                             print(re+f"[!] Error creating chat with {user['name']}: {e}")
                             del queued_messages[key]
                 else:
                     # Regular DM.
+                    queued_replies[key] = formatted_reply
                     print(gr+"[+] Sending Message to:", user['name'])
-                    await client.send_message(receiver, formatted_message)
+                    try:
+                        await client.send_message(receiver, formatted_message)
+                    except Exception as e:
+                        print(re+f"[!] Error sending message to {user['name']}: {e}")
+                        del queued_replies[key]
 
                 # Sleeps to avoid being rate limited.
                 print(gr+"[+] Waiting {} seconds".format(SLEEP_TIME))
@@ -185,8 +227,13 @@ class main():
                 continue
         
         # Sends the rest of the queued messages.
-        while len(queued_messages) > 0:
-            print(gr+f"[+] Message left: {len(queued_messages)}")
+        while queued_messages:
+            print(gr+f"[+] Messages left: {len(queued_messages)}")
+            await asyncio.sleep(UPDATE_TIME)
+        
+        # Sends the rest of the replies.
+        while queued_replies:
+            print(gr+f"[+] Replies left: {len(queued_replies)}")
             await asyncio.sleep(UPDATE_TIME)
         
         # Disconnects the client.
